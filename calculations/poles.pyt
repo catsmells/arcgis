@@ -5,7 +5,8 @@ from bisect import insort
 from dataclasses import dataclass
 from collections.abc import Callable, Iterator
 
-POIMethod = Callable[[arcpy.Polygon, float], arcpy.PointGeometry]
+# Iterator needed so multipart polygons can get a POI per part
+POIMethod = Callable[[arcpy.Polygon, float], Iterator[arcpy.PointGeometry]]
 sqrt_2 = 2**0.5
 
 @dataclass
@@ -75,7 +76,7 @@ def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.01) -> Iterator[arc
     arcpy.AddMessage(f'Best Distance: {best_cell.possible_dist}')
     yield best_cell.centroid
 
-def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.001) -> arcpy.PointGeometry:
+def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.001) -> Iterator[arcpy.PointGeometry]:
     raise NotImplementedError
 
 METHODS: dict[str, POIMethod] = {
