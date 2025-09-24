@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Iterator
 
 # Iterator needed so multipart polygons can get a POI per part
-POIMethod = Callable[[arcpy.Polygon, float], Iterator[arcpy.PointGeometry]]
+POIMethod = Callable[[arcpy.Polygon, float, bool], Iterator[arcpy.PointGeometry]]
 sqrt_2 = 2**0.5
 
 @dataclass
@@ -40,10 +40,10 @@ class Cell:
         
         # Subdivide cell and return a list sorted by longest first
         next_cells: list[Cell] = [
-            Cell(x_plus, y_plus, h, self.polygon, self.boundary),
-            Cell(x_plus, y_minus, h, self.polygon, self.boundary),
-            Cell(x_minus, y_plus, h, self.polygon, self.boundary),
-            Cell(x_minus , y_minus, h, self.polygon, self.boundary),
+            Cell(x_plus, y_plus, h, self.polygon, self.boundary, geodesic=self.geodesic),
+            Cell(x_plus, y_minus, h, self.polygon, self.boundary, geodesic=self.geodesic),
+            Cell(x_minus, y_plus, h, self.polygon, self.boundary, geodesic=self.geodesic),
+            Cell(x_minus , y_minus, h, self.polygon, self.boundary, geodesic=self.geodesic),
         ]
         return sorted([c for c in next_cells if c and c.possible_dist > self.distance])
 
@@ -56,7 +56,7 @@ class Cell:
     def __bool__(self) -> bool:
         return self.possible_dist > 0
     
-def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
+def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1, geodesic: bool=False) -> Iterator[arcpy.PointGeometry]:
     # Handle multipart
     if polygon.isMultipart:
         polygons = [arcpy.Polygon(part, polygon.spatialReference) for part in polygon]
@@ -89,7 +89,7 @@ def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcp
     # Initial cells
     _cell_size /= 2
     initial_cells = sorted([
-        Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, _boundary)
+        Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, _boundary, geodesic=geodesic)
         for x, y in zip(
             range(int(_extent.XMin), int(_extent.XMax), int(_cell_size) or 1), 
             range(int(_extent.YMin), int(_extent.YMax), int(_cell_size) or 1)
@@ -203,7 +203,16 @@ class PoleOfInaccessibilityTool:
         )
         largest_part_only.value = True
 
-        return [polygon_layer, output_poles, precision, method, largest_part_only]
+        geodesic = arcpy.Parameter(
+            displayName='Use Geodesic? (SLOW)',
+            name='geodesic',
+            datatype='GPBoolean',
+            parameterType='Required',
+            direction='Input',
+        )
+        geodesic.value = False
+
+        return [polygon_layer, output_poles, precision, method, largest_part_only, geodesic]
 
     def isLicensed(self):
         """Set whether tool is licensed to execute."""
@@ -226,6 +235,7 @@ class PoleOfInaccessibilityTool:
         output_poles = params['output_poles'].valueAsText
         precision = params['precision'].value
         largest_part_only = params['largest_part_only'].value
+        geodesic = params['geodesic'].value
         get_poi = METHODS[params['method'].value]
         
         def filter_max(polygon: arcpy.Polygon) -> arcpy.Polygon:
@@ -237,6 +247,6 @@ class PoleOfInaccessibilityTool:
         arcpy.management.CopyFeatures([ # type: ignore
             poi
             for polygon, in arcpy.da.SearchCursor(input_features, ['SHAPE@'])
-            for poi in get_poi(filter_max(polygon), precision)
+            for poi in get_poi(filter_max(polygon), precision, geodesic)
         ], output_poles)
         
