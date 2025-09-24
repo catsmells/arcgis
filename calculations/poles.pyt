@@ -16,12 +16,15 @@ class Cell:
     h: float
     polygon: arcpy.Polygon
     boundary: arcpy.Polyline
+    geodesic: bool=False
     
     def __post_init__(self) -> None:
         self.centroid = arcpy.PointGeometry(arcpy.Point(self.x, self.y), self.polygon.spatialReference)
-        near, *_ = self.boundary.queryPointAndDistance(self.centroid)
-        _, self.distance = self.centroid.angleAndDistanceTo(near)
-        #self.distance = self.centroid.distanceTo(self.boundary)
+        if self.geodesic:
+            near, *_ = self.boundary.queryPointAndDistance(self.centroid)
+            _, self.distance = self.centroid.angleAndDistanceTo(near)
+        else:
+            self.distance = self.centroid.distanceTo(self.boundary)
         self.possible_dist = self.distance + self.h * sqrt_2
         # Negative distance for cells that are outside polygon
         if not self.polygon.contains(self.centroid):
