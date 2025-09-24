@@ -15,30 +15,32 @@ class Cell:
     y: float
     h: float
     polygon: arcpy.Polygon
+    boundary: arcpy.Polyline
     
     def __post_init__(self) -> None:
         self.centroid = arcpy.PointGeometry(arcpy.Point(self.x, self.y), self.polygon.spatialReference)
-        self.distance = self.centroid.distanceTo(self.polygon)
-        self.possible_dist = self.distance + self.h*sqrt_2
-        if not self.centroid.within(self.polygon):
+        self.distance = self.centroid.distanceTo(self.boundary)
+        self.possible_dist = self.distance + self.h * sqrt_2
+        # Negative distance for cells that are outside polygon
+        if not self.polygon.contains(self.centroid):
             self.distance = -self.distance
             self.possible_dist = -self.possible_dist
     
     def next_cells(self) -> list[Cell]:
         h = self.h / 2
-        x_plus = (self.x+h) / 2
-        y_plus = (self.y+h) / 2
-        y_minus = (self.y-h) / 2
-        x_minus = (self.x-h) / 2
+        x_plus = self.x+h
+        y_plus = self.y+h
+        y_minus = self.y-h
+        x_minus = self.x-h
         
         # Subdivide cell and return a list sorted by longest first
         next_cells: list[Cell] = [
-            Cell(x_plus, y_plus, h, self.polygon),
-            Cell(x_plus, y_minus, h, self.polygon),
-            Cell(x_minus, y_plus, h, self.polygon),
-            Cell(x_minus , y_minus, h, self.polygon),
+            Cell(x_plus, y_plus, h, self.polygon, self.boundary),
+            Cell(x_plus, y_minus, h, self.polygon, self.boundary),
+            Cell(x_minus, y_plus, h, self.polygon, self.boundary),
+            Cell(x_minus , y_minus, h, self.polygon, self.boundary),
         ]
-        return sorted([c for c in next_cells if c.possible_dist > 0])
+        return sorted([c for c in next_cells if c])
 
     def __lt__(self, other: Cell) -> bool:
         return self.possible_dist < other.possible_dist
@@ -46,37 +48,64 @@ class Cell:
     def __gt__(self, other: Cell) -> bool:
         return self.possible_dist > other.possible_dist
     
-def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.01) -> Iterator[arcpy.PointGeometry]:
+    def _bool__(self) -> bool:
+        return self.possible_dist > 0
+    
+def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
     # Handle multipart
     if polygon.isMultipart:
         polygons = [arcpy.Polygon(part, polygon.spatialReference) for part in polygon]
         yield from (poi for polygon in polygons for poi in adaptive_grid(polygon, precision))
         return
-        
+
     # Get initial Cell
     _extent = polygon.extent
-    _centroid = _extent.polygon.centroid
-    cell = Cell(_centroid.X, _centroid.Y, min(_extent.width, _extent.height), polygon)
+    _centroid = polygon.centroid
+    _cell_size = min(_extent.width, _extent.height) / 2
+    
+    base_cell = Cell(_centroid.X, _centroid.Y, _cell_size, polygon, polygon.boundary())
+    extent_cell = Cell(_extent.polygon.centroid.X, _extent.polygon.centroid.Y, _cell_size, polygon, polygon.boundary())
     
     # Initialize Queue
-    cell_queue: list[Cell] = cell.next_cells()
-    if not cell_queue:
-        yield arcpy.PointGeometry(_centroid, polygon.spatialReference)
+    cell_queue: list[Cell] = []
+    # Polygon and Extent cells
+    insort(cell_queue, base_cell)
+    insort(cell_queue, extent_cell)
+    
+    # Initial cells
+    _cell_size /= 2
+    for x in range(int(_extent.XMin), int(_extent.XMax), int(_cell_size)):
+        for y in range(int(_extent.YMin), int(_extent.YMax), int(_cell_size)):
+            c = Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, polygon.boundary())
+            if c: # Skip cells that are outside polygon
+                insort(cell_queue, c)
+    
+    # Pop the best cell candidate off the queue
     best_cell = cell_queue.pop()
     
     # Traverse the cell subdivisions until a minimum is found for precision level
+    iterations = 0
     while cell_queue:
-        if best_cell.h <= precision:
-            break
-        arcpy.AddMessage(f'Current H: {best_cell.h} ({len(cell_queue)})')
-        best_cell = cell_queue.pop()
-        for cell in best_cell.next_cells():
-            insort(cell_queue, cell)
+        arcpy.SetProgressorLabel(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (iteration {iterations})...')
+        iterations += 1
+        # Pop the next cell off the queue
+        next_cell = cell_queue.pop()
+        if next_cell.possible_dist < best_cell.distance:
+            continue # Skip cells with no possible better distance
         
-    arcpy.AddMessage(f'Best Distance: {best_cell.possible_dist}')
+        # Update best cell if next cell is further away
+        if next_cell.distance > best_cell.distance:
+            best_cell = next_cell
+        
+        # Add next cell children to the queue
+        for cell in next_cell.next_cells():
+            if cell.h >= precision and cell.possible_dist > best_cell.distance:
+                insort(cell_queue, cell)
+        
+    arcpy.AddMessage(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (found in {iterations} iterations)')
     yield best_cell.centroid
 
-def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.001) -> Iterator[arcpy.PointGeometry]:
+def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
     raise NotImplementedError
 
 METHODS: dict[str, POIMethod] = {
@@ -131,7 +160,7 @@ class PoleOfInaccessibilityTool:
             parameterType="Required",
             direction="Input",
         )
-        precision.value = 0.001  # Default tolerance
+        precision.value = 0.1  # Default tolerance
 
         method = arcpy.Parameter(
             displayName='Caclulation Method',
@@ -170,8 +199,9 @@ class PoleOfInaccessibilityTool:
         
         # Get POIs
         arcpy.management.CopyFeatures([ # type: ignore
-            get_poi(polygon, precision)
+            poi
             for polygon, in arcpy.da.SearchCursor(input_features, ['SHAPE@'])
             if isinstance(polygon, arcpy.Polygon)
+            for poi in get_poi(polygon, precision)
         ], output_poles)
         
