@@ -60,50 +60,67 @@ def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcp
         yield from (poi for polygon in polygons for poi in adaptive_grid(polygon, precision))
         return
 
-    # Get initial Cell
+    # Get initial cells
     _extent = polygon.extent
-    _centroid = polygon.centroid
+    _e_centroid = _extent.polygon.centroid
+    _p_centroid = polygon.centroid
+    _boundary: arcpy.Polyline = polygon.boundary() # type: ignore
     _cell_size = min(_extent.width, _extent.height) / 2
+    _unit_name = polygon.spatialReference.linearUnitName
     
-    base_cell = Cell(_centroid.X, _centroid.Y, _cell_size, polygon, polygon.boundary())
-    extent_cell = Cell(_extent.polygon.centroid.X, _extent.polygon.centroid.Y, _cell_size, polygon, polygon.boundary())
+    base_cell = Cell(_p_centroid.X, _p_centroid.Y, _cell_size, polygon, _boundary)
+    extent_cell = Cell(_e_centroid.X, _e_centroid.Y, _cell_size, polygon, _boundary)
     
-    # Polygon and Extent cells
+    # Find best of polygon and extent cells
     best_cell = base_cell if base_cell > extent_cell else extent_cell
     
     # Initialize Queue
-    cell_queue: deque[Cell] = deque()
+    cell_queue: list[Cell] = []
     
-    def possibly_queue(cell: Cell, best_cell: Cell) -> Cell:
-        """Insert cell to cell_queue if possibly better and return best cell"""        
-        if cell.distance > best_cell.distance:
-            best_cell = cell
-        elif cell.possible_dist > best_cell.distance and cell.h >= precision:
+    def possibly_queue(cell: Cell, best_cell: Cell) -> None:
+        """Insert cell to cell_queue if possibly better and return best cell"""
+        # Insert the cell to the queue if it is possibly better
+        if cell.possible_dist > best_cell.distance and cell.h >= precision:
             insort(cell_queue, cell)
-        return best_cell
 
     # Initial cells
     _cell_size /= 2
-    for x in range(int(_extent.XMin), int(_extent.XMax), int(_cell_size) or 1):
-        for y in range(int(_extent.YMin), int(_extent.YMax), int(_cell_size) or 1):
-            cell = Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, polygon.boundary())
-            best_cell = possibly_queue(cell, best_cell)
+    initial_cells = sorted([
+        Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, _boundary)
+        for x, y in zip(
+            range(int(_extent.XMin), int(_extent.XMax), int(_cell_size) or 1), 
+            range(int(_extent.YMin), int(_extent.YMax), int(_cell_size) or 1)
+        )
+    ])
+    for cell in initial_cells:
+        possibly_queue(cell, best_cell)
     
     # Traverse the cell subdivisions until a minimum is found for precision level
     processed = 0
     while cell_queue:
-        arcpy.SetProgressorLabel(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (processed {processed} cells | current queue size: {len(cell_queue)})...')
         processed += 1
+        arcpy.SetProgressorLabel(
+            f'Best Distance: {best_cell.distance:0.0f} {_unit_name}' 
+            f' (processed {processed} cells | current queue size: {len(cell_queue)})...'
+        )
         # Pop the next cell off the queue
-        current_cell = cell_queue.pop()
-        if current_cell.possible_dist < best_cell.distance:
-            continue # Skip cells with no possible better distance
+        current_cell = cell_queue.pop() #heapq.heappop(cell_queue)
+        
+        # Prune cells with no possible better distance
+        if current_cell.possible_dist <= best_cell.distance:
+            continue
+        
+        if current_cell.distance > best_cell.distance:
+            best_cell = current_cell
         
         # Add next cell children to the queue
         for cell in current_cell.next_cells():
-            best_cell = possibly_queue(cell, best_cell)
+            possibly_queue(cell, best_cell)
         
-    arcpy.AddMessage(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (found in {processed} iterations)')
+    arcpy.AddMessage(
+        f'Best Distance: {best_cell.distance:0.0f} {_unit_name}' 
+        f' (found in {processed} iterations)'
+    )
     yield best_cell.centroid
 
 def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
