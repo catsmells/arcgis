@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import arcpy
+from collections import deque
 from bisect import insort
 from dataclasses import dataclass
 from collections.abc import Callable, Iterator
@@ -40,7 +41,7 @@ class Cell:
             Cell(x_minus, y_plus, h, self.polygon, self.boundary),
             Cell(x_minus , y_minus, h, self.polygon, self.boundary),
         ]
-        return sorted([c for c in next_cells if c])
+        return next_cells
 
     def __lt__(self, other: Cell) -> bool:
         return self.possible_dist < other.possible_dist
@@ -66,43 +67,42 @@ def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcp
     base_cell = Cell(_centroid.X, _centroid.Y, _cell_size, polygon, polygon.boundary())
     extent_cell = Cell(_extent.polygon.centroid.X, _extent.polygon.centroid.Y, _cell_size, polygon, polygon.boundary())
     
-    # Initialize Queue
-    cell_queue: list[Cell] = []
     # Polygon and Extent cells
-    insort(cell_queue, base_cell)
-    insort(cell_queue, extent_cell)
+    best_cell = base_cell if base_cell > extent_cell else extent_cell
     
+    # Initialize Queue
+    cell_queue: deque[Cell] = deque()
+    
+    def possibly_queue(cell: Cell, best_cell: Cell) -> Cell:
+        """Insert cell to cell_queue if possibly better and return best cell"""        
+        if cell.distance > best_cell.distance:
+            best_cell = cell
+        elif cell.possible_dist > best_cell.distance and cell.h >= precision:
+            insort(cell_queue, cell)
+        return best_cell
+
     # Initial cells
     _cell_size /= 2
-    for x in range(int(_extent.XMin), int(_extent.XMax), int(_cell_size)):
-        for y in range(int(_extent.YMin), int(_extent.YMax), int(_cell_size)):
-            c = Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, polygon.boundary())
-            if c: # Skip cells that are outside polygon
-                insort(cell_queue, c)
-    
-    # Pop the best cell candidate off the queue
-    best_cell = cell_queue.pop()
+    for x in range(int(_extent.XMin), int(_extent.XMax), int(_cell_size) or 1):
+        for y in range(int(_extent.YMin), int(_extent.YMax), int(_cell_size) or 1):
+            cell = Cell(x + _cell_size, y + _cell_size, _cell_size, polygon, polygon.boundary())
+            best_cell = possibly_queue(cell, best_cell)
     
     # Traverse the cell subdivisions until a minimum is found for precision level
-    iterations = 0
+    processed = 0
     while cell_queue:
-        arcpy.SetProgressorLabel(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (iteration {iterations})...')
-        iterations += 1
+        arcpy.SetProgressorLabel(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (processed {processed} cells | current queue size: {len(cell_queue)})...')
+        processed += 1
         # Pop the next cell off the queue
-        next_cell = cell_queue.pop()
-        if next_cell.possible_dist < best_cell.distance:
+        current_cell = cell_queue.pop()
+        if current_cell.possible_dist < best_cell.distance:
             continue # Skip cells with no possible better distance
         
-        # Update best cell if next cell is further away
-        if next_cell.distance > best_cell.distance:
-            best_cell = next_cell
-        
         # Add next cell children to the queue
-        for cell in next_cell.next_cells():
-            if cell.h >= precision and cell.possible_dist > best_cell.distance:
-                insort(cell_queue, cell)
+        for cell in current_cell.next_cells():
+            best_cell = possibly_queue(cell, best_cell)
         
-    arcpy.AddMessage(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (found in {iterations} iterations)')
+    arcpy.AddMessage(f'Best Distance: {best_cell.distance:0.0f} {polygon.spatialReference.linearUnitName} (found in {processed} iterations)')
     yield best_cell.centroid
 
 def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
@@ -173,7 +173,16 @@ class PoleOfInaccessibilityTool:
             method.filter.list = list(METHODS.keys())
         method.value = 'Adaptive Grid'
 
-        return [polygon_layer, output_poles, precision, method]
+        largest_part_only = arcpy.Parameter(
+            displayName='Largest Part Only',
+            name='largest_part_only',
+            datatype='GPBoolean',
+            parameterType='Required',
+            direction='Input',
+        )
+        largest_part_only.value = True
+
+        return [polygon_layer, output_poles, precision, method, largest_part_only]
 
     def isLicensed(self):
         """Set whether tool is licensed to execute."""
@@ -195,13 +204,18 @@ class PoleOfInaccessibilityTool:
         input_features = params['polygon_layer'].value
         output_poles = params['output_poles'].valueAsText
         precision = params['precision'].value
+        largest_part_only = params['largest_part_only'].value
         get_poi = METHODS[params['method'].value]
+        
+        def filter_max(polygon: arcpy.Polygon) -> arcpy.Polygon:
+            if not largest_part_only:
+                return polygon
+            return max([arcpy.Polygon(part, polygon.spatialReference) for part in polygon], key=lambda p: p.area)
         
         # Get POIs
         arcpy.management.CopyFeatures([ # type: ignore
             poi
             for polygon, in arcpy.da.SearchCursor(input_features, ['SHAPE@'])
-            if isinstance(polygon, arcpy.Polygon)
-            for poi in get_poi(polygon, precision)
+            for poi in get_poi(filter_max(polygon), precision)
         ], output_poles)
         
