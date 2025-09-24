@@ -48,7 +48,7 @@ class Cell:
     def __gt__(self, other: Cell) -> bool:
         return self.possible_dist > other.possible_dist
     
-    def _bool__(self) -> bool:
+    def __bool__(self) -> bool:
         return self.possible_dist > 0
     
 def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
