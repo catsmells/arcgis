@@ -126,7 +126,7 @@ def adaptive_grid(polygon: arcpy.Polygon, precision: float=0.1, geodesic: bool=F
     )
     yield best_cell.centroid
 
-def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.1) -> Iterator[arcpy.PointGeometry]:
+def b9_hillclimbing(polygon: arcpy.Polygon, precision: float=0.1, geodesic: bool=False) -> Iterator[arcpy.PointGeometry]:
     raise NotImplementedError
 
 METHODS: dict[str, POIMethod] = {
@@ -218,15 +218,15 @@ class PoleOfInaccessibilityTool:
         """Set whether tool is licensed to execute."""
         return True
 
-    def updateParameters(self, parameters):
+    def updateParameters(self, parameters: list[arcpy.Parameter]):
         """Modify the values and properties of parameters before internal validation is performed."""
         return
 
-    def updateMessages(self, parameters):
+    def updateMessages(self, parameters: list[arcpy.Parameter]):
         """Modify the messages created by internal validation for each tool parameter."""
         return
 
-    def execute(self, parameters: list[arcpy.Parameter], messages):
+    def execute(self, parameters: list[arcpy.Parameter], messages: list[object]):
         """The source code of the tool.""" 
         params = {p.name: p for p in parameters}
         
