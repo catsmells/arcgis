@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import arcpy
-from collections import deque
 from bisect import insort
 from dataclasses import dataclass
 from collections.abc import Callable, Iterator
@@ -20,7 +19,9 @@ class Cell:
     
     def __post_init__(self) -> None:
         self.centroid = arcpy.PointGeometry(arcpy.Point(self.x, self.y), self.polygon.spatialReference)
-        self.distance = self.centroid.distanceTo(self.boundary)
+        near, *_ = self.boundary.queryPointAndDistance(self.centroid)
+        _, self.distance = self.centroid.angleAndDistanceTo(near)
+        #self.distance = self.centroid.distanceTo(self.boundary)
         self.possible_dist = self.distance + self.h * sqrt_2
         # Negative distance for cells that are outside polygon
         if not self.polygon.contains(self.centroid):
