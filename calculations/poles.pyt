@@ -42,7 +42,7 @@ class Cell:
             Cell(x_minus, y_plus, h, self.polygon, self.boundary),
             Cell(x_minus , y_minus, h, self.polygon, self.boundary),
         ]
-        return next_cells
+        return sorted([c for c in next_cells if c and c.possible_dist > self.distance])
 
     def __lt__(self, other: Cell) -> bool:
         return self.possible_dist < other.possible_dist
